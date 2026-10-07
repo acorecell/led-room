@@ -117,6 +117,8 @@ body.idle .dock{opacity:.22;}
 
 <script>
 (() => {
+// if the page is hot-updated while open, only the newest copy keeps rendering (two loops on one canvas = ghost frames)
+const RUN = {}; window.__strandRun = RUN;
 const canvas = document.getElementById('stage');
 const gl = canvas.getContext('webgl2', {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:'high-performance'});
 if(!gl){ document.body.insertAdjacentHTML('beforeend','<div class="err">This browser does not support WebGL2. Try the latest Chrome or Safari.</div>'); return; }
@@ -386,7 +388,7 @@ function camera(t){
     cv.yaw += (0.05*Math.sin(T*0.045) + 0.018*Math.sin(T*0.11)) * dt * a;
     const pt = 0.3 + 0.24*Math.sin(T*0.031 - 1.2);
     cv.pitch += (pt - cv.pitch) * (1 - Math.exp(-dt*0.25)) * a;
-    const tp = [BASE[0] + Math.sin(T*0.027)*1.4, BASE[1] + 0.15 + Math.sin(T*0.019)*0.3, BASE[2] + Math.sin(T*0.015 + 1.3)*1.6 - 0.6];
+    const tp = [BASE[0] + Math.sin(T*0.027)*1.2, BASE[1] + 0.15 + Math.sin(T*0.019)*0.3, BASE[2] + 0.4 + Math.sin(T*0.015 + 1.3)*0.8];
     for(let i=0;i<3;i++) CAM[i] += (tp[i] - CAM[i]) * (1 - Math.exp(-dt*0.12)) * a;
   }
   // soft limits: rubber-band back instead of hitting a wall
@@ -446,14 +448,14 @@ function chargeFrame(){
 }
 function onTap(p){
   combo = (now - lastTap < 0.45) ? combo + 1 : 1; lastTap = now;
-  if(combo === 1){ burstAt(p, 1, 0, 0); tapSound(0); }
+  if(combo === 1){ burstAt(p, 1, 0, 0); tapSound(0); glitch(0.12, 0.05); }
   else if(combo === 2){ burstAt(p, 1.15, 0.78, 1); tapSound(1); }
   else { burstAt(p, 0.75 + Math.min(combo,8)*0.04, (combo*0.137)%1, 1); tapSound(combo); }
-  if(combo === 5){ rainT = now; showToast('LIGHT RAIN'); rainSound(); }
-  else if(combo >= 3) showToast('COMBO ×' + combo);
+  if(combo === 5){ rainT = now; showToast('LIGHT RAIN'); rainSound(); glitch(1.0, 0.9); }
+  else if(combo >= 3){ showToast('COMBO ×' + combo); glitch(0.25 + combo*0.07, 0.12); }
 }
 function onRelease(p, amt){
-  burstAt(p, 1 + amt*1.6, 0, 2); releaseSound(amt); combo = 0;
+  burstAt(p, 1 + amt*1.6, 0, 2); releaseSound(amt); combo = 0; glitch(0.35 + amt*0.6, 0.15 + amt*0.5);
   if(amt > 0.95) showToast('FULL CHARGE');
 }
 const hint = document.getElementById('hint');
@@ -479,7 +481,7 @@ canvas.addEventListener('pointermove', e => {
       if(pinch0) cv.tfov = Math.max(62, Math.min(112, pinch0.fov * pinch0.d / d));
       lastActive = now; return;
     }
-    if(pt.moved > 6){
+    if(pt.moved > 12){
       const k = radPerPx() * 0.9;
       cv.yaw += dx*k; cv.pitch += dy*k;
       // smoothed velocity for the release flick
@@ -506,7 +508,7 @@ canvas.addEventListener('pointerdown', e => {
 const up = e => {
   const pt = ptrs.get(e.pointerId); ptrs.delete(e.pointerId);
   if(ptrs.size < 2) pinch0 = null;
-  if(pt && pt.moved <= 6){
+  if(pt && pt.moved <= 12){
     if(holding && holding.amt > 0.04) onRelease(holding.p, holding.amt);
   }
   tap = null; holding = null; stopCharge();
@@ -521,6 +523,7 @@ canvas.addEventListener('wheel', e => { e.preventDefault(); cv.tfov = Math.max(6
 addEventListener('keydown', e => {
   const s = 0.9; lastActive = now;
   if(e.key === 'r' || e.key === 'R' || e.key === 'Escape') cv.home = true;
+  if(e.key === 'g' || e.key === 'G') glitch(0.9, 0.6);
   if(e.key === 'ArrowLeft') cv.vyaw = s; if(e.key === 'ArrowRight') cv.vyaw = -s;
   if(e.key === 'ArrowUp') cv.vpitch = s*0.7; if(e.key === 'ArrowDown') cv.vpitch = -s*0.7;
 });
@@ -578,20 +581,21 @@ const CELL = Object.fromEntries(ATLAS.cells.map(c => [c.n, c]));
 // x, z, cutout, flip
 const PEOPLE = [
   // near
-  [-3.2, 3.6, 'pair_phone', 0], [ 2.9, 3.3, 'two_men', 1],  [ 0.9, 4.4, 'slim', 1],
+  [-3.2, 3.6, 'pair_phone', 0], [ 2.9, 3.3, 'two_men', 1],  [ 0.9, 3.4, 'slim', 1],
   // middle
   [-1.6, 1.9, 'dress_bag', 0],  [ 2.0, 1.6, 'pair_right', 0], [-0.3, 0.2, 'phone_girl', 0],
   // deep in the aisle and clearings
   [ Math.sin(-4*0.35)*1.2, -4.0, 'skirt', 1], [Math.sin(-8.5*0.35)*1.2, -8.5, 'slim', 0],    [-5.2, -5.5, 'two_men', 0],
   [ 5.6, -8.5, 'dress_bag', 1], [ 4.2, 1.2, 'skirt', 0]
 ].filter((_,i) => !small || i < 8);
-function drawPeople(t, mirror){
+function drawPeople(t, mirror, tintOverride){
   if(!S || !texReady) return;
   gl.useProgram(S); gl.bindVertexArray(quadVAO);
-  gl.uniformMatrix4fv(us.vp,false,VP); gl.uniform3fv(us.cam, CAM); gl.uniform2fv(us.mirror, mirror);
-  gl.uniform3fv(us.tint, mirror[0] > 0 ? [0.006,0.005,0.012] : [0.004,0.003,0.008]);
+  gl.uniformMatrix4fv(us.vp,false,VP); gl.uniform3fv(us.cam, [BASE[0], 0, BASE[2] + 40]); gl.uniform2fv(us.mirror, mirror);
+  gl.uniform3fv(us.tint, tintOverride || (mirror[0] > 0 ? [0.006,0.005,0.012] : [0.004,0.003,0.008]));
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(us.tex, 0);
   PEOPLE.forEach((p, i) => {
+    if(Math.hypot(p[0] - CAM[0], p[1] - CAM[2]) < 2.6) return;   // never let a figure fill the lens
     const c = CELL[p[2]];
     gl.uniform4f(us.p, p[0], p[1], c.h, c.h*c.asp);
     gl.uniform4f(us.r, c.u0, c.v0, c.u1, c.v1);
@@ -764,7 +768,7 @@ async function playFile(file){
 }
 function nextScene(){ A.prevScene = A.scene; A.scene = (A.scene + 1) % 5; A.fadeStart = now; }
 function onHit(s){
-  A.pulse = Math.max(A.pulse, s); A.beats++;
+  A.pulse = Math.max(A.pulse, s); A.beats++; if(Math.random() < 0.35) glitch(0.18 + s*0.15, 0.04);
   spawn([ (Math.random()-0.5)*10, 1 + Math.random()*8, -2 - Math.random()*8 ]);
 }
 function audioFrame(){
@@ -797,10 +801,131 @@ function updateMusicUI(){
 musicBtn.addEventListener('click', () => A.mode === 'gen' ? stopMusic() : playGenerated());
 fileIn.addEventListener('change', () => { const f = fileIn.files[0]; if(f) playFile(f); fileIn.value = ''; });
 
+// ---------- glitch post-process: RGB split, torn rows, pixel-sort smears, colour bars, a live waveform ----------
+const GVS = `#version 300 es
+out vec2 vUV;
+void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); vUV = p; gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+const GFS = `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 o;
+uniform sampler2D uScene, uWave, uMask; uniform float uG, uT, uWaveA, uSeed; uniform vec2 uRes;
+float h1(float p){ p = fract(p*0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float h2(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+vec3 hue(float h){ return clamp(abs(mod(h*6.0 + vec3(0.0,4.0,2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
+// offset taps that land on a silhouette fall back to the centre sample, so people never smear or leave ghosts
+vec3 tap(vec2 uv, float d){
+  vec3 c0 = texture(uScene, uv).rgb;
+  vec2 ur = uv + vec2(d, 0.0), ub = uv - vec2(d, d*0.25);
+  float r = mix(texture(uScene, ur).r, c0.r, texture(uMask, ur).r);
+  float b = mix(texture(uScene, ub).b, c0.b, texture(uMask, ub).r);
+  return vec3(r, c0.g, b);
+}
+void main(){
+  vec2 uv = vUV;
+  float g = uG;
+  float tick = floor(uT*18.0) + uSeed*97.0;
+  // the frame itself never moves: only the light beads fringe into red / blue, a touch more on some rows
+  float rows = mix(20.0, 60.0, h1(tick*1.7));
+  float row = floor(uv.y*rows);
+  float rowBoost = 1.0 + 1.5*step(1.0 - g*0.5, h2(vec2(row, tick)));
+  float split = g * 0.0045 * rowBoost;
+  vec3 c = tap(uv, split);
+  c += (h2(vUV*uRes + uT*60.0) - 0.5) * 0.025 * g;
+  // waveform across the middle of the screen
+  if(uWaveA > 0.01){
+    float w = texture(uWave, vec2(vUV.x, 0.5)).r;
+    float amp = abs(w - 0.5)*2.0;
+    float dy = abs(vUV.y - 0.5 - (w - 0.5)*0.02);
+    float line = smoothstep(amp*0.22*uWaveA + 0.0015, 0.0, dy) ;
+    float core = smoothstep(0.0025, 0.0, abs(vUV.y - 0.5));
+    c += vec3(0.95,0.97,1.0) * (line*0.9 + core*0.35) * uWaveA;
+  }
+  // the visitors stay solid: wherever a silhouette is, show the untouched frame
+  float m = texture(uMask, vUV).r;
+  c = mix(c, texture(uScene, vUV).rgb, m);
+  o = vec4(c, 1.0);
+}`;
+let G = null;
+try { G = prog(GVS, GFS); } catch(e){ console.error(e); }
+const ug = G ? {scene:gl.getUniformLocation(G,'uScene'), wave:gl.getUniformLocation(G,'uWave'), g:gl.getUniformLocation(G,'uG'), t:gl.getUniformLocation(G,'uT'), wa:gl.getUniformLocation(G,'uWaveA'), seed:gl.getUniformLocation(G,'uSeed'), res:gl.getUniformLocation(G,'uRes'), mask:gl.getUniformLocation(G,'uMask')} : null;
+const emptyVAO = gl.createVertexArray();
+const fbo = {fb:null, tex:null, depth:null, w:0, h:0, mfb:null, mtex:null};
+function ensureFBO(){
+  if(fbo.w === W && fbo.h === H) return;
+  if(fbo.fb){ gl.deleteFramebuffer(fbo.fb); gl.deleteTexture(fbo.tex); gl.deleteRenderbuffer(fbo.depth); }
+  fbo.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, fbo.tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  fbo.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, fbo.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, W, H);
+  fbo.fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbo.tex, 0);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, fbo.depth);
+  if(fbo.mfb){ gl.deleteFramebuffer(fbo.mfb); gl.deleteTexture(fbo.mtex); }
+  fbo.mtex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, fbo.mtex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  fbo.mfb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.mfb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbo.mtex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  fbo.w = W; fbo.h = H;
+}
+// waveform texture: the music's own waveform when it plays, a synthetic signal otherwise
+const WN = 512, waveData = new Uint8Array(WN), waveTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, waveTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, WN, 1, 0, gl.RED, gl.UNSIGNED_BYTE, waveData);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+let timeBuf = null;
+function updateWave(t, strength){
+  if(A.mode && A.an){
+    if(!timeBuf) timeBuf = new Uint8Array(A.an.fftSize);
+    A.an.getByteTimeDomainData(timeBuf);
+    for(let i=0;i<WN;i++){ const v = (timeBuf[i*2 % timeBuf.length] - 128)*Math.min(6, 2 + strength*6); waveData[i] = Math.max(0, Math.min(255, 128 + v)); }
+  } else {
+    for(let i=0;i<WN;i++){
+      const x = i/WN, env = Math.pow(Math.sin(Math.PI*x), 0.6);
+      const n = Math.sin(x*180 + t*40)*Math.sin(x*23 - t*7) + (Math.random()-0.5)*1.4*Math.pow(Math.random(), 3);
+      waveData[i] = Math.max(0, Math.min(255, 128 + n*env*90*strength));
+    }
+  }
+  gl.bindTexture(gl.TEXTURE_2D, waveTex);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, WN, 1, gl.RED, gl.UNSIGNED_BYTE, waveData);
+}
+// glitch energy: events kick it, it decays; quiet moments get rare little hiccups
+const gl_ = {g:0, hold:0, wave:0, seed:0, nextIdle:8};
+function glitch(amount, holdSec=0){
+  gl_.g = Math.max(gl_.g, amount); gl_.hold = Math.max(gl_.hold, now + holdSec); gl_.seed = Math.random();
+  if(amount > 0.45) glitchSound(amount);
+}
+function glitchSound(a){
+  if(!sfxOn()) return;
+  const C = A.ctx, t = C.currentTime + 0.005, n = 3 + Math.floor(a*5);
+  for(let i=0;i<n;i++){
+    const s = C.createBufferSource(), f = C.createBiquadFilter(), g = C.createGain(), st = t + i*0.035 + Math.random()*0.02;
+    s.buffer = A.noise; f.type = 'bandpass'; f.frequency.value = 400 + Math.random()*5000; f.Q.value = 4;
+    g.gain.setValueAtTime(0.0001, st); g.gain.linearRampToValueAtTime(0.09*a, st+0.004); g.gain.setValueAtTime(0.09*a, st+0.025); g.gain.linearRampToValueAtTime(0.0001, st+0.03);
+    s.connect(f); f.connect(g); g.connect(A.master); s.start(st, Math.random()*0.3); s.stop(st+0.04);
+  }
+}
+function glitchFrame(t){
+  const dt = Math.min(0.1, now - (gl_.last || now)); gl_.last = now;
+  if(now > gl_.hold) gl_.g *= Math.exp(-dt*3.2);
+  if(now > gl_.nextIdle){ if(!down) glitch(0.25 + Math.random()*0.3, 0.06 + Math.random()*0.12); gl_.nextIdle = now + 7 + Math.random()*14; }
+  const flick = gl_.g > 0.05 ? (0.8 + 0.2*Math.sign(Math.sin(t*37.0 + Math.sin(t*13.0)*3.0))) : 1;
+  const g = Math.min(1, gl_.g * flick);
+  const wantWave = 0;   // waveform overlay disabled
+  gl_.wave += (wantWave - gl_.wave) * (1 - Math.exp(-dt*(wantWave > gl_.wave ? 25 : 4)));
+  if(gl_.wave > 0.01) updateWave(t, Math.max(gl_.g, 0.35));
+  return g;
+}
+
 // ---------- render loop ----------
 const t0 = performance.now();
 gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
 function frame(){
+  if(window.__strandRun !== RUN){ try{ stopMusic(); }catch(e){} return; }
   now = (performance.now()-t0)/1000;
   const t = reduce ? now*0.4 : now;
   camera(now);
@@ -809,7 +934,7 @@ function frame(){
   if(want !== tr.to){
     const prog = tr.from === tr.to ? 1 : (now - tr.start)/TR_DUR;
     if(prog < 0.5) tr.to = want;                      // barely started: retarget, keep the same sweep
-    else { tr.from = tr.to; tr.to = want; tr.start = now; }
+    else { tr.from = tr.to; tr.to = want; tr.start = now; glitch(0.55, 0.25); }
   }
   let sc = tr.from, sc2 = tr.to, fade = 0;
   if(tr.from !== tr.to){
@@ -821,6 +946,11 @@ function frame(){
   if(shown !== shownScene){ shownScene = shown; showCaption(shown); }
   if(capOn && now - capAt > 4.5){ capOn = false; caption.classList.remove('on'); }
   document.body.classList.toggle('idle', now - lastInteract > 6 && !down);
+  const gAmt = G ? glitchFrame(t) : 0;
+  const post = G && (gAmt > 0.004 || gl_.wave > 0.01);
+  if(post){ ensureFBO(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb); }
+  gl.viewport(0,0,W,H);
+  gl.depthMask(true);   // depth writes must be on for clear() to reset depth, or old silhouettes pile up as trails
   gl.clearColor(0.012,0.008,0.024,1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   // silhouettes write depth so the lights behind them are hidden
@@ -841,6 +971,20 @@ function frame(){
   gl.uniform2f(u.mirror,-1,0); gl.uniform1f(u.dim,0.28); gl.drawArrays(gl.POINTS,0,N);
   gl.uniform2f(u.mirror,-1,2*ROOMH); gl.uniform1f(u.dim,0.24); gl.drawArrays(gl.POINTS,0,N);
   gl.uniform2f(u.mirror, 1,0); gl.uniform1f(u.dim,1.0);  gl.drawArrays(gl.POINTS,0,N);
+  if(post){
+    // silhouette mask, so the glitch tears the light but never the people
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.mfb); gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST);
+    gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    drawPeople(t, [1,0], [1,1,1]); drawPeople(t, [-1,0], [1,1,1]); drawPeople(t, [-1, 2*ROOMH], [1,1,1]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.useProgram(G); gl.bindVertexArray(emptyVAO);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, fbo.tex); gl.uniform1i(ug.scene, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, waveTex); gl.uniform1i(ug.wave, 1);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, fbo.mtex); gl.uniform1i(ug.mask, 2);
+    gl.uniform1f(ug.g, reduce ? gAmt*0.3 : gAmt); gl.uniform1f(ug.t, now); gl.uniform1f(ug.wa, gl_.wave); gl.uniform1f(ug.seed, gl_.seed); gl.uniform2f(ug.res, W, H);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE0); gl.enable(gl.BLEND);
+  }
   requestAnimationFrame(frame);
 }
 // ripple uses scene time t; keep 'now' consistent
